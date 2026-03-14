@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!--
+   ______                            __
+  / ____/___  ____ ___  ____  __  __/ /____  _____
+ / /   / __ \/ __ `__ \/ __ \/ / / / __/ _ \/ ___/
+/ /___/ /_/ / / / / / / /_/ / /_/ / /_/  __/ /
+\____/\____/_/ /_/ /_/ .___/\__,_/\__/\___/_/
+                    /_/
+        Created with Perplexity Computer
+        https://www.perplexity.ai/computer
+-->
+<meta name="generator" content="Perplexity Computer">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Whip It</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;touch-action:none;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+canvas{display:block;image-rendering:pixelated;image-rendering:crisp-edges}
+#game-wrapper{width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#1a1008;overflow:hidden}
+footer{position:fixed;bottom:4px;right:8px;z-index:9999;font-size:9px;opacity:0.4}
+footer a{color:#aaa;text-decoration:none}
+</style>
+</head>
+<body>
+<div id="game-wrapper"><canvas id="c"></canvas></div>
+<footer><a href="https://www.perplexity.ai/computer" target="_blank" rel="noopener noreferrer">Created with Perplexity Computer</a></footer>
+<script>
+(function(){
+'use strict';
+
+const W = 320, H = 240;
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = W; canvas.height = H;
+
+// Resize
+function resize() {
+  const wr = document.getElementById('game-wrapper');
+  const ww = wr.clientWidth, wh = wr.clientHeight;
+  const aspect = W / H;
+  let cw, ch;
+  if (ww / wh > aspect) { ch = wh; cw = ch * aspect; } else { cw = ww; ch = cw / aspect; }
+  canvas.style.width = Math.floor(cw) + 'px';
+  canvas.style.height = Math.floor(ch) + 'px';
+}
+window.addEventListener('resize', resize);
+setTimeout(resize, 50);
+
+// Colors
+const C = {
+  bg: '#2a1a0a', floor: '#3a2a1a', floorLine: '#4a3a2a',
+  wall: '#1a1208', wallBrick: '#2a1a0a',
+  skin: '#fcb898', skinDark: '#d49070',
+  hair: '#5c3400', hairDan: '#c89040',
+  shirt: '#2038ec', shirtDark: '#0018b0',
+  pants: '#1a1a40', pantsDark: '#101030',
+  danShirt: '#cc3030', danShirtDark: '#901818',
+  chair: '#6c5020', chairDark: '#4a3810',
+  rope: '#c8b060',
+  whip: '#5c3400', whipTip: '#3a2000',
+  white: '#fcfcfc', black: '#000',
+  red: '#ff3030', yellow: '#fcbc3c',
+  text: '#e8d8c0', textDim: '#8a7a5a',
+  bulb: '#fce090', bulbGlow: 'rgba(252,224,120,0.15)',
+};
+
+// Audio
+let audioCtx = null;
+function initAudio() {
+  if (audioCtx) return;
+  try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
+}
+function tone(freq, dur, type, vol, slide) {
+  if (!audioCtx) return;
+  try {
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type = type || 'sawtooth'; o.frequency.value = freq;
+    if (slide) o.frequency.linearRampToValueAtTime(slide, audioCtx.currentTime + dur);
+    g.gain.setValueAtTime(vol || 0.1, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+    o.connect(g).connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime + dur);
+  } catch(e) {}
+}
+
+function sfxWhipCrack() {
+  // Crack sound: quick noise burst
+  if (!audioCtx) return;
+  try {
+    const bufferSize = audioCtx.sampleRate * 0.08;
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufferSize, 3);
+    }
+    const src = audioCtx.createBufferSource();
+    const gain = audioCtx.createGain();
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'highpass'; filter.frequency.value = 2000;
+    src.buffer = buffer;
+    gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+    src.connect(filter).connect(gain).connect(audioCtx.destination);
+    src.start();
+  } catch(e) {}
+  // Also a sharp tone
+  tone(800, 0.04, 'square', 0.08, 200);
+}
+
+function sfxOuch() {
+  tone(300, 0.15, 'square', 0.08, 150);
+  setTimeout(() => tone(200, 0.2, 'sawtooth', 0.06, 100), 80);
+}
+
+// State
+let whipState = 0; // 0=idle, 1-30=whipping animation
+let whipTimer = 0;
+let hitCount = 0;
+let danReact = 0; // reaction timer
+let danPhrase = '';
+let shakeX = 0, shakeY = 0;
+let particles = [];
+let blink = 0;
+
+const phrases = [
+  'OW!', 'HEY!', 'STOP!', 'OUCH!', 'WHY?!',
+  'NOT COOL!', 'COME ON!', 'QUIT IT!', 'REALLY?!', 'BRO!',
+  'DUDE!', 'OW OW OW!', 'MERCY!', 'UNCLE!', 'NO MORE!',
+  'I GIVE UP!', 'PLEASE!', 'AHHHH!', 'YOWCH!', 'HELP!',
+  'KNOCK IT OFF!', 'SERIOUSLY?!', 'WHAT DID I DO?!', 'THIS IS ABUSE!',
+];
+
+// Input
+function onTap(e) {
+  if (e) e.preventDefault();
+  initAudio();
+  if (whipState === 0) {
+    whipState = 1;
+    whipTimer = 0;
+  }
+}
+document.addEventListener('mousedown', onTap);
+document.addEventListener('touchstart', onTap, { passive: false });
+document.addEventListener('keydown', e => { if (e.code === 'Space') onTap(); });
+
+// Helpers
+function rect(x, y, w, h, c) { ctx.fillStyle = c; ctx.fillRect(Math.round(x), Math.round(y), w, h); }
+function text(str, x, y, size, color, align) {
+  ctx.font = size + 'px "Press Start 2P", monospace';
+  ctx.textAlign = align || 'left'; ctx.textBaseline = 'top';
+  ctx.fillStyle = '#000'; ctx.fillText(str, x + 1, y + 1);
+  ctx.fillStyle = color || C.white; ctx.fillText(str, x, y);
+}
+
+// Spawn particles at hit location
+function spawnHitParticles() {
+  const bx = 200, by = 120; // Dan's body area
+  for (let i = 0; i < 8; i++) {
+    particles.push({
+      x: bx + Math.random() * 20 - 10,
+      y: by + Math.random() * 10 - 5,
+      vx: (Math.random() - 0.3) * 3,
+      vy: -Math.random() * 3 - 1,
+      life: 15 + Math.random() * 10,
+      color: Math.random() < 0.5 ? C.yellow : C.red,
+      size: 2 + Math.random() * 2,
+    });
+  }
+}
+
+// ── Draw Scene ─────────────────────────────────────────────
+
+function drawRoom() {
+  // Back wall
+  rect(0, 0, W, 180, C.wall);
+  // Brick lines
+  for (let by = 0; by < 180; by += 20) {
+    const offset = (by / 20) % 2 === 0 ? 0 : 20;
+    for (let bx = offset; bx < W; bx += 40) {
+      rect(bx, by, 39, 19, C.wallBrick);
+    }
+  }
+
+  // Floor
+  rect(0, 180, W, 60, C.floor);
+  for (let fx = 0; fx < W; fx += 24) {
+    rect(fx, 180, 23, 1, C.floorLine);
+    rect(fx + 12, 195, 23, 1, C.floorLine);
+  }
+
+  // Hanging light bulb
+  rect(W/2 - 1, 0, 2, 30, '#404040');
+  // Bulb
+  ctx.fillStyle = C.bulb;
+  ctx.beginPath();
+  ctx.arc(W/2, 35, 5, 0, Math.PI * 2);
+  ctx.fill();
+  // Glow
+  ctx.fillStyle = C.bulbGlow;
+  ctx.beginPath();
+  ctx.arc(W/2, 35, 40, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(W/2, 35, 25, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawChair(x, y) {
+  // Chair legs
+  rect(x + 2, y + 24, 3, 16, C.chairDark);
+  rect(x + 19, y + 24, 3, 16, C.chairDark);
+  // Seat
+  rect(x, y + 20, 24, 5, C.chair);
+  rect(x + 1, y + 21, 22, 3, C.chairDark);
+  // Back
+  rect(x + 1, y - 10, 3, 30, C.chair);
+  rect(x + 20, y - 10, 3, 30, C.chair);
+  rect(x + 1, y - 10, 22, 3, C.chair);
+  rect(x + 1, y, 22, 3, C.chair);
+}
+
+function drawDanStrader(x, y, react) {
+  // Dan is sitting in chair, tied up
+  const shake = react > 0 ? (Math.sin(react * 2) * 2) : 0;
+  const sx = x + shake;
+
+  // Legs
+  rect(sx + 2, y + 18, 7, 14, C.pants);
+  rect(sx + 13, y + 18, 7, 14, C.pants);
+  // Shoes
+  rect(sx + 1, y + 30, 8, 4, C.black);
+  rect(sx + 13, y + 30, 8, 4, C.black);
+
+  // Body / shirt
+  rect(sx + 2, y + 4, 18, 16, C.danShirt);
+  rect(sx + 4, y + 6, 14, 12, C.danShirtDark);
+  
+  // Arms tied behind
+  rect(sx, y + 8, 3, 8, C.skin);
+  rect(sx + 19, y + 8, 3, 8, C.skin);
+
+  // Rope around torso
+  rect(sx + 1, y + 7, 20, 2, C.rope);
+  rect(sx + 1, y + 13, 20, 2, C.rope);
+  // Rope around legs
+  rect(sx + 1, y + 24, 20, 2, C.rope);
+
+  // Head
+  const headY = y - 8 + shake * 0.5;
+  rect(sx + 4, headY, 14, 12, C.skin);
+  
+  // Hair (blondish)
+  rect(sx + 3, headY - 2, 16, 4, C.hairDan);
+  rect(sx + 3, headY, 2, 4, C.hairDan);
+  rect(sx + 17, headY, 2, 4, C.hairDan);
+
+  // Face expression
+  if (react > 0) {
+    // Pain face: squeezed eyes, open mouth
+    rect(sx + 7, headY + 4, 3, 1, C.black); // left eye squeezed
+    rect(sx + 13, headY + 4, 3, 1, C.black); // right eye squeezed
+    // Open mouth
+    rect(sx + 9, headY + 8, 5, 3, C.black);
+    rect(sx + 10, headY + 8, 3, 2, C.red);
+  } else {
+    // Normal worried face
+    if (Math.floor(blink / 40) % 8 !== 0) {
+      rect(sx + 7, headY + 3, 3, 3, C.white);
+      rect(sx + 8, headY + 4, 2, 2, C.black);
+      rect(sx + 13, headY + 3, 3, 3, C.white);
+      rect(sx + 14, headY + 4, 2, 2, C.black);
+    } else {
+      // Blink
+      rect(sx + 7, headY + 4, 3, 1, C.black);
+      rect(sx + 13, headY + 4, 3, 1, C.black);
+    }
+    // Worried mouth
+    rect(sx + 9, headY + 8, 4, 2, C.skinDark);
+  }
+
+  // Name label
+  text('DAN', sx + 3, y + 38, 6, C.textDim, 'left');
+}
+
+function drawDavidBlake(x, y, whipFrame) {
+  // David standing, holding whip
+  const armAngle = whipFrame;
+
+  // Legs
+  rect(x + 4, y + 20, 6, 14, C.pants);
+  rect(x + 12, y + 20, 6, 14, C.pants);
+  // Shoes
+  rect(x + 3, y + 32, 7, 4, C.darkBrown || '#5c3400');
+  rect(x + 12, y + 32, 7, 4, C.darkBrown || '#5c3400');
+
+  // Body
+  rect(x + 2, y + 6, 18, 16, C.shirt);
+  rect(x + 4, y + 8, 14, 12, C.shirtDark);
+  // Belt
+  rect(x + 2, y + 20, 18, 2, C.yellow);
+  // Bolt symbol
+  rect(x + 9, y + 10, 1, 4, C.yellow);
+  rect(x + 10, y + 11, 1, 1, C.yellow);
+  rect(x + 11, y + 10, 1, 4, C.yellow);
+
+  // Left arm (stationary)
+  rect(x, y + 8, 3, 10, C.shirt);
+  rect(x, y + 16, 3, 3, C.skin);
+
+  // Right arm (whip arm) - animates
+  if (whipState > 0 && whipState <= 10) {
+    // Arm raising back
+    rect(x + 19, y + 4, 3, 8, C.shirt);
+    rect(x + 19, y + 2, 3, 3, C.skin);
+  } else if (whipState > 10 && whipState <= 16) {
+    // Arm swinging forward
+    rect(x + 19, y + 8, 10, 3, C.shirt);
+    rect(x + 27, y + 8, 3, 3, C.skin);
+  } else if (whipState > 16) {
+    // Arm extended forward
+    rect(x + 19, y + 9, 8, 3, C.shirt);
+    rect(x + 25, y + 9, 3, 3, C.skin);
+  } else {
+    // Idle - arm down holding whip
+    rect(x + 19, y + 8, 3, 10, C.shirt);
+    rect(x + 19, y + 16, 3, 3, C.skin);
+    // Whip coiled at side
+    rect(x + 18, y + 19, 5, 2, C.whip);
+    rect(x + 17, y + 21, 3, 2, C.whip);
+  }
+
+  // Head
+  rect(x + 4, y - 6, 14, 12, C.skin);
+  // Hair
+  rect(x + 3, y - 8, 16, 4, C.hair);
+  rect(x + 3, y - 6, 2, 4, C.hair);
+  rect(x + 17, y - 6, 2, 4, C.hair);
+
+  // Face - determined expression
+  if (whipState > 10 && whipState <= 20) {
+    // Intense face during swing
+    rect(x + 7, y - 3, 3, 2, C.white);
+    rect(x + 8, y - 3, 2, 2, C.black);
+    rect(x + 13, y - 3, 3, 2, C.white);
+    rect(x + 14, y - 3, 2, 2, C.black);
+    rect(x + 9, y + 2, 4, 2, C.black);
+  } else {
+    // Normal face with slight grin
+    if (Math.floor(blink / 40) % 6 !== 0) {
+      rect(x + 7, y - 4, 3, 3, C.white);
+      rect(x + 8, y - 3, 2, 2, C.black);
+      rect(x + 13, y - 4, 3, 3, C.white);
+      rect(x + 14, y - 3, 2, 2, C.black);
+    } else {
+      rect(x + 7, y - 3, 3, 1, C.black);
+      rect(x + 13, y - 3, 3, 1, C.black);
+    }
+    // Smirk
+    rect(x + 9, y + 1, 5, 1, C.skinDark);
+    rect(x + 10, y + 2, 3, 1, C.skinDark);
+  }
+
+  // Name label
+  text('DAVID', x, y + 38, 6, C.textDim, 'left');
+}
+
+function drawWhipAnimation() {
+  if (whipState === 0) return;
+
+  const davidX = 60, davidY = 142;
+  const danX = 190, danY = 130;
+
+  if (whipState <= 10) {
+    // Whip pulling back - small arc behind David
+    const t = whipState / 10;
+    ctx.strokeStyle = C.whip;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(davidX + 20, davidY + 4);
+    const cx = davidX + 10 - t * 15;
+    const cy = davidY - 10 - t * 20;
+    ctx.quadraticCurveTo(cx, cy, davidX + 5, davidY - 5 - t * 10);
+    ctx.stroke();
+  } else if (whipState <= 20) {
+    // Whip swinging forward
+    const t = (whipState - 10) / 10;
+    ctx.strokeStyle = C.whip;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    const startX = davidX + 29;
+    const startY = davidY + 9;
+    const endX = startX + t * (danX - startX + 10);
+    const endY = startY + (t < 0.5 ? -t * 30 : -(1-t) * 30);
+    const cpX = startX + t * 40;
+    const cpY = startY - 30;
+    ctx.moveTo(startX, startY);
+    ctx.quadraticCurveTo(cpX, cpY, endX, endY);
+    ctx.stroke();
+
+    // Whip tip
+    if (t > 0.7) {
+      rect(endX - 1, endY - 1, 3, 3, C.whipTip);
+    }
+  } else if (whipState <= 25) {
+    // Whip making contact / wrapping
+    const t = (whipState - 20) / 5;
+    ctx.strokeStyle = C.whip;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(davidX + 26, davidY + 9);
+    ctx.quadraticCurveTo(
+      davidX + 60, davidY - 20 + t * 10,
+      danX + 5, danY + 5
+    );
+    ctx.stroke();
+
+    // Impact star
+    if (whipState === 21 || whipState === 22) {
+      const sx = danX + 5, sy = danY + 5;
+      ctx.fillStyle = C.yellow;
+      for (let a = 0; a < 8; a++) {
+        const angle = (a / 8) * Math.PI * 2 + whipState * 0.3;
+        const len = 6 + Math.random() * 4;
+        rect(sx + Math.cos(angle) * len, sy + Math.sin(angle) * len, 2, 2, C.yellow);
+      }
+      rect(sx - 3, sy - 3, 6, 6, C.white);
+      rect(sx - 2, sy - 2, 4, 4, C.yellow);
+    }
+  } else {
+    // Whip retracting
+    const t = (whipState - 25) / 5;
+    ctx.strokeStyle = C.whip;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(davidX + 26, davidY + 9);
+    const endX = davidX + 26 + (1 - t) * 50;
+    const endY = davidY + 9 + (1 - t) * -15;
+    ctx.lineTo(endX, endY);
+    ctx.stroke();
+  }
+}
+
+// ── Update ─────────────────────────────────────────────────
+function update() {
+  blink++;
+
+  if (whipState > 0) {
+    whipState++;
+
+    // Hit moment
+    if (whipState === 21) {
+      sfxWhipCrack();
+      hitCount++;
+      danReact = 25;
+      danPhrase = phrases[Math.floor(Math.random() * phrases.length)];
+      shakeX = 3;
+      shakeY = 2;
+      spawnHitParticles();
+      setTimeout(() => sfxOuch(), 100);
+    }
+
+    // End of whip animation
+    if (whipState > 30) {
+      whipState = 0;
+    }
+  }
+
+  // Dan reaction
+  if (danReact > 0) danReact--;
+
+  // Screen shake
+  if (shakeX > 0) { shakeX *= 0.85; if (shakeX < 0.3) shakeX = 0; }
+  if (shakeY > 0) { shakeY *= 0.85; if (shakeY < 0.3) shakeY = 0; }
+
+  // Particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.15; p.life--;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
+// ── Render ─────────────────────────────────────────────────
+function render() {
+  ctx.save();
+  
+  // Screen shake
+  if (shakeX > 0 || shakeY > 0) {
+    ctx.translate(
+      (Math.random() - 0.5) * shakeX * 2,
+      (Math.random() - 0.5) * shakeY * 2
+    );
+  }
+
+  drawRoom();
+
+  // Draw chair behind Dan
+  drawChair(190, 150);
+
+  // Draw Dan Strader (tied to chair)
+  drawDanStrader(188, 130, danReact);
+
+  // Draw David Blake
+  drawDavidBlake(60, 142);
+
+  // Draw whip
+  drawWhipAnimation();
+
+  // Particles
+  for (const p of particles) {
+    const alpha = p.life / 25;
+    ctx.globalAlpha = Math.min(1, alpha);
+    rect(p.x, p.y, p.size, p.size, p.color);
+    ctx.globalAlpha = 1;
+  }
+
+  // Dan's speech bubble
+  if (danReact > 5 && danPhrase) {
+    const bx = 200, by = 85;
+    const tw = danPhrase.length * 6 + 12;
+    // Bubble
+    rect(bx - tw/2 - 2, by - 2, tw + 4, 16, C.black);
+    rect(bx - tw/2, by, tw, 12, C.white);
+    // Pointer
+    rect(bx - 2, by + 12, 4, 4, C.white);
+    rect(bx - 1, by + 16, 2, 3, C.white);
+    // Text
+    text(danPhrase, bx, by + 2, 7, C.red, 'center');
+  }
+
+  ctx.restore();
+
+  // HUD - hit counter
+  text('HITS', W/2, 6, 7, C.textDim, 'center');
+  text(String(hitCount), W/2, 16, 12, C.yellow, 'center');
+
+  // Instruction
+  if (hitCount === 0 && whipState === 0) {
+    if (Math.floor(blink / 30) % 2 === 0) {
+      text('TAP TO WHIP', W/2, H - 20, 7, C.text, 'center');
+    }
+  }
+}
+
+// ── Loop ───────────────────────────────────────────────────
+let lastTime = 0;
+function gameLoop(ts) {
+  const delta = ts - lastTime;
+  lastTime = ts;
+  if (delta > 0 && delta < 200) update();
+  render();
+  requestAnimationFrame(gameLoop);
+}
+
+document.addEventListener('click', () => initAudio(), { once: true });
+document.addEventListener('touchstart', () => initAudio(), { once: true });
+requestAnimationFrame(gameLoop);
+
+})();
+</script>
+</body>
+</html>
